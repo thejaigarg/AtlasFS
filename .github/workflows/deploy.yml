@@ -10,63 +10,28 @@ on:
       - '.github/workflows/**'
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GKE_CLUSTER: atlas-fs-472018  # Hard-coded to be safe
+  PROJECT_ID: atlas-fs-472018
+  GKE_CLUSTER: atlas-fs-472018
   GKE_ZONE: us-central1
   REGISTRY: gcr.io
 
 jobs:
-  detect-changes:
-    runs-on: ubuntu-latest
-    outputs:
-      services: ${{ steps.detect.outputs.services }}
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 2
-      
-      - id: detect
-        run: |
-          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD || echo "services/")
-          SERVICES=""
-          
-          for service in gateway upload storage metadata download; do
-            if echo "$CHANGED_FILES" | grep -q "services/$service/"; then
-              SERVICES="$SERVICES $service"
-            fi
-          done
-          
-          if [ -z "$SERVICES" ]; then
-            SERVICES="gateway"  # Default to gateway if nothing detected
-          fi
-          
-          echo "Changed services: $SERVICES"
-          echo "services=$SERVICES" >> $GITHUB_OUTPUT
-
   build-and-deploy:
-    needs: detect-changes
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    # FIXED: Better Google Cloud authentication
-    - name: Setup Cloud SDK
-      uses: google-github-actions/setup-gcloud@v0
+    # CORRECT WAY to authenticate
+    - id: 'auth'
+      name: 'Authenticate to Google Cloud'
+      uses: 'google-github-actions/auth@v1'
       with:
-        service_account_key: ${{ secrets.GCP_SA_KEY }}
-        project_id: atlas-fs-472018
-        export_default_credentials: true
+        credentials_json: '${{ secrets.GCP_SA_KEY }}'
 
-    # NEW: Authenticate with service account
-    - name: Authenticate to Google Cloud
-      run: |
-        echo "${{ secrets.GCP_SA_KEY }}" | base64 -d > /tmp/gcp-key.json
-        gcloud auth activate-service-account --key-file=/tmp/gcp-key.json
-        gcloud config set project atlas-fs-472018
-        gcloud config set compute/zone us-central1
-        gcloud config set compute/region us-central1
+    - name: 'Set up Cloud SDK'
+      uses: 'google-github-actions/setup-gcloud@v1'
 
     - name: Configure Docker for GCR
       run: |
@@ -76,34 +41,29 @@ jobs:
       run: |
         gcloud container clusters get-credentials atlas-fs-472018 --region us-central1
 
-    - name: Build and Deploy Services
+    - name: Build and Push Gateway
       run: |
-        SERVICES="${{ needs.detect-changes.outputs.services }}"
+        # Build the Docker image
+        docker build -t gcr.io/atlas-fs-472018/gateway:${{ github.sha }} \
+                     -t gcr.io/atlas-fs-472018/gateway:latest \
+                     -f services/gateway/Dockerfile .
         
-        for SERVICE in $SERVICES; do
-          if [ "$SERVICE" != "none" ] && [ -d "services/$SERVICE" ]; then
-            echo "Building $SERVICE..."
-            
-            # Build Docker image
-            docker build -t gcr.io/atlas-fs-472018/$SERVICE:$GITHUB_SHA \
-                         -t gcr.io/atlas-fs-472018/$SERVICE:latest \
-                         -f services/$SERVICE/Dockerfile .
-            
-            # Push to GCR
-            docker push gcr.io/atlas-fs-472018/$SERVICE:$GITHUB_SHA
-            docker push gcr.io/atlas-fs-472018/$SERVICE:latest
-            
-            # Update Kubernetes deployment
-            kubectl set image deployment/$SERVICE \
-                    $SERVICE=gcr.io/atlas-fs-472018/$SERVICE:$GITHUB_SHA \
-                    -n atlasfs || echo "Deployment $SERVICE not found, creating it..."
-            
-            # If deployment doesn't exist, create it
-            if ! kubectl get deployment $SERVICE -n atlasfs; then
-              kubectl apply -f k8s/$SERVICE.yaml
-            fi
-          fi
-        done
+        # Push to GCR
+        docker push gcr.io/atlas-fs-472018/gateway:${{ github.sha }}
+        docker push gcr.io/atlas-fs-472018/gateway:latest
+
+    - name: Deploy to GKE
+      run: |
+        # Apply the deployment
+        kubectl apply -f k8s/gateway.yaml
+        
+        # Update the image
+        kubectl set image deployment/gateway \
+                gateway=gcr.io/atlas-fs-472018/gateway:${{ github.sha }} \
+                -n atlasfs
+        
+        # Check rollout status
+        kubectl rollout status deployment/gateway -n atlasfs
 
     - name: Verify Deployment
       run: |
