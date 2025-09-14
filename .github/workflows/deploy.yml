@@ -14,7 +14,6 @@ env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
   GKE_ZONE: ${{ secrets.GKE_ZONE }}
-  REGISTRY: gcr.io
 
 jobs:
   build-and-deploy:
@@ -24,60 +23,45 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    - name: Setup Google Cloud
-      uses: google-github-actions/setup-gcloud@v1
+    # THIS IS THE FIX - Proper authentication
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v1
       with:
-        service_account_key: ${{ secrets.GCP_SA_KEY }}
-        project_id: ${{ secrets.GCP_PROJECT_ID }}
-        export_default_credentials: true
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-    - name: Configure Docker for GCR
+    - name: Setup Cloud SDK
+      uses: google-github-actions/setup-gcloud@v1
+
+    - name: Configure Docker for Artifact Registry
       run: |
-        gcloud auth configure-docker
+        gcloud auth configure-docker us-central1-docker.pkg.dev
+
+    - name: Install kubectl
+      run: |
+        gcloud components install kubectl
 
     - name: Get GKE credentials
       run: |
-        gcloud container clusters get-credentials $GKE_CLUSTER --region $GKE_ZONE
+        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --region ${{ env.GKE_ZONE }}
 
-    - name: Build and Deploy Gateway
-      if: contains(github.event.head_commit.modified, 'services/gateway')
+    - name: Build and Push Gateway
       run: |
-        docker build -t $REGISTRY/$PROJECT_ID/gateway:$GITHUB_SHA \
-                     -t $REGISTRY/$PROJECT_ID/gateway:latest \
+        docker build -t us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }} \
+                     -t us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:latest \
                      -f services/gateway/Dockerfile .
         
-        docker push $REGISTRY/$PROJECT_ID/gateway:$GITHUB_SHA
-        docker push $REGISTRY/$PROJECT_ID/gateway:latest
-        
-        kubectl set image deployment/gateway \
-                gateway=$REGISTRY/$PROJECT_ID/gateway:$GITHUB_SHA \
-                -n atlasfs || echo "Gateway deployment not found"
+        docker push us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }}
+        docker push us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:latest
 
-    - name: Build and Deploy Upload
-      if: contains(github.event.head_commit.modified, 'services/upload')
+    - name: Deploy Gateway
       run: |
-        docker build -t $REGISTRY/$PROJECT_ID/upload:$GITHUB_SHA \
-                     -t $REGISTRY/$PROJECT_ID/upload:latest \
-                     -f services/upload/Dockerfile .
+        kubectl set image deployment/gateway \
+          gateway=us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }} \
+          -n atlasfs
         
-        docker push $REGISTRY/$PROJECT_ID/upload:$GITHUB_SHA
-        docker push $REGISTRY/$PROJECT_ID/upload:latest
-        
-        kubectl set image deployment/upload \
-                upload=$REGISTRY/$PROJECT_ID/upload:$GITHUB_SHA \
-                -n atlasfs || echo "Upload deployment not found"
+        kubectl rollout status deployment/gateway -n atlasfs
 
     - name: Verify Deployment
       run: |
         kubectl get pods -n atlasfs
         kubectl get services -n atlasfs
-    
-    - name: Deploy Gateway
-      run: |
-        # Update deployment with new image
-        kubectl set image deployment/gateway \
-          gateway=$REGISTRY/$PROJECT_ID/gateway:$GITHUB_SHA \
-          -n atlasfs
-        
-        # Wait for rollout
-        kubectl rollout status deployment/gateway -n atlasfs
