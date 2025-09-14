@@ -1,5 +1,5 @@
-# services/gateway/Dockerfile
-FROM golang:1.21-alpine AS builder
+# Use Go 1.22 instead of 1.21
+FROM golang:1.22-alpine AS builder
 
 WORKDIR /app
 
