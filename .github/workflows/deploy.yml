@@ -1,67 +1,81 @@
 # .github/workflows/deploy.yml
-name: Build and Deploy to GKE
+name: Deploy to GKE
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - 'services/**'
-      - 'k8s/**'
-      - '.github/workflows/**'
+    branches: [main]
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
-  GKE_ZONE: ${{ secrets.GKE_ZONE }}
+  PROJECT_ID: atlas-fs-472018
+  GKE_CLUSTER: atlas-fs-472018
+  GKE_ZONE: us-central1
+  REGION: us-central1
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+    - uses: actions/checkout@v3
 
-    # THIS IS THE FIX - Proper authentication
-    - name: Authenticate to Google Cloud
+    # Fix authentication
+    - id: auth
       uses: google-github-actions/auth@v1
       with:
         credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-    - name: Setup Cloud SDK
-      uses: google-github-actions/setup-gcloud@v1
+    - uses: google-github-actions/setup-gcloud@v1
 
-    - name: Configure Docker for Artifact Registry
+    - name: Configure Docker and Kubectl
       run: |
-        gcloud auth configure-docker us-central1-docker.pkg.dev
-
-    - name: Install kubectl
-      run: |
-        gcloud components install kubectl
-
-    - name: Get GKE credentials
-      run: |
+        gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
         gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --region ${{ env.GKE_ZONE }}
 
-    - name: Build and Push Gateway
+    - name: Build and Deploy Gateway
       run: |
-        docker build -t us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }} \
-                     -t us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:latest \
+        # Build gateway
+        docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }} \
+                     -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:latest \
                      -f services/gateway/Dockerfile .
         
-        docker push us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }}
-        docker push us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:latest
-
-    - name: Deploy Gateway
-      run: |
-        kubectl set image deployment/gateway \
-          gateway=us-central1-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }} \
-          -n atlasfs
+        # Push gateway
+        docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }}
+        docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:latest
         
+        # Deploy gateway
+        kubectl apply -f k8s/gateway.yaml
+        kubectl set image deployment/gateway gateway=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }} -n atlasfs
+
+    - name: Build and Deploy Upload
+      run: |
+        # Build upload
+        docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/upload:${{ github.sha }} \
+                     -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/upload:latest \
+                     -f services/upload/Dockerfile .
+        
+        # Push upload
+        docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/upload:${{ github.sha }}
+        docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/upload:latest
+        
+        # Deploy upload
+        kubectl apply -f k8s/upload.yaml
+        kubectl set image deployment/upload upload=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/upload:${{ github.sha }} -n atlasfs
+
+    - name: Wait for Rollout
+      run: |
         kubectl rollout status deployment/gateway -n atlasfs
+        kubectl rollout status deployment/upload -n atlasfs
 
     - name: Verify Deployment
       run: |
+        echo "=== Deployed Pods ==="
         kubectl get pods -n atlasfs
+        echo ""
+        echo "=== Services ==="
         kubectl get services -n atlasfs
+        echo ""
+        echo "=== Gateway Logs ==="
+        kubectl logs -n atlasfs deployment/gateway --tail=10
+        echo ""
+        echo "=== Upload Logs ==="
+        kubectl logs -n atlasfs deployment/upload --tail=10
