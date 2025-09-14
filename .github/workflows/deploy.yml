@@ -13,7 +13,7 @@ env:
   PROJECT_ID: atlas-fs-472018
   GKE_CLUSTER: atlas-fs-472018
   GKE_ZONE: us-central1
-  REGISTRY: gcr.io
+  REPOSITORY: us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo
 
 jobs:
   build-and-deploy:
@@ -23,7 +23,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    # CORRECT WAY to Authenticate
     - id: 'auth'
       name: 'Authenticate to Google Cloud'
       uses: 'google-github-actions/auth@v1'
@@ -32,25 +31,34 @@ jobs:
 
     - name: 'Set up Cloud SDK'
       uses: 'google-github-actions/setup-gcloud@v1'
+      with:
+        install_components: 'gke-gcloud-auth-plugin'  # ADD THIS LINE
 
-    - name: Configure Docker for Artifact Registry  # CHANGED THIS
+    - name: Configure Docker for Artifact Registry
       run: |
         gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-    - name: Get GKE credentials
+    - name: Install kubectl and configure GKE access  # ADD THIS SECTION
       run: |
+        # Install kubectl
+        gcloud components install kubectl
+        
+        # Set up GKE credentials
         gcloud container clusters get-credentials atlas-fs-472018 --region us-central1
+        
+        # Verify connection
+        kubectl get nodes
 
     - name: Build and Push Gateway
       run: |
         # Build the Docker image
-        docker build -t us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:${{ github.sha }} \
-                     -t us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:latest \
+        docker build -t ${{ env.REPOSITORY }}/gateway:${{ github.sha }} \
+                     -t ${{ env.REPOSITORY }}/gateway:latest \
                      -f services/gateway/Dockerfile .
         
-        # Push to GCR
-        docker push us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:${{ github.sha }}
-        docker push us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:latest
+        # Push to Artifact Registry
+        docker push ${{ env.REPOSITORY }}/gateway:${{ github.sha }}
+        docker push ${{ env.REPOSITORY }}/gateway:latest
 
     - name: Deploy to GKE
       run: |
@@ -59,13 +67,16 @@ jobs:
         
         # Update the image
         kubectl set image deployment/gateway \
-                gateway=us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:${{ github.sha }} \
+                gateway=${{ env.REPOSITORY }}/gateway:${{ github.sha }} \
                 -n atlasfs
         
         # Check rollout status
-        kubectl rollout status deployment/gateway -n atlasfs
+        kubectl rollout status deployment/gateway -n atlasfs --timeout=300s
 
     - name: Verify Deployment
       run: |
         kubectl get pods -n atlasfs
         kubectl get services -n atlasfs
+        echo "Waiting for external IP..."
+        sleep 30
+        kubectl get svc gateway -n atlasfs
