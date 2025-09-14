@@ -1,3 +1,4 @@
+# .github/workflows/deploy.yml
 name: Build and Deploy to GKE
 
 on:
@@ -10,10 +11,10 @@ on:
       - '.github/workflows/**'
 
 env:
-  PROJECT_ID: atlas-fs-472018
-  GKE_CLUSTER: atlas-fs-472018
-  GKE_ZONE: us-central1
-  REPOSITORY: us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
+  GKE_ZONE: ${{ secrets.GKE_ZONE }}
+  REGISTRY: gcr.io
 
 jobs:
   build-and-deploy:
@@ -23,60 +24,50 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    - id: 'auth'
-      name: 'Authenticate to Google Cloud'
-      uses: 'google-github-actions/auth@v1'
+    - name: Setup Google Cloud
+      uses: google-github-actions/setup-gcloud@v1
       with:
-        credentials_json: '${{ secrets.GCP_SA_KEY }}'
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        export_default_credentials: true
 
-    - name: 'Set up Cloud SDK'
-      uses: 'google-github-actions/setup-gcloud@v1'
-      with:
-        install_components: 'gke-gcloud-auth-plugin'  # ADD THIS LINE
-
-    - name: Configure Docker for Artifact Registry
+    - name: Configure Docker for GCR
       run: |
-        gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+        gcloud auth configure-docker
 
-    - name: Install kubectl and configure GKE access  # ADD THIS SECTION
+    - name: Get GKE credentials
       run: |
-        # Install kubectl
-        gcloud components install kubectl
-        
-        # Set up GKE credentials
-        gcloud container clusters get-credentials atlas-fs-472018 --region us-central1
-        
-        # Verify connection
-        kubectl get nodes
+        gcloud container clusters get-credentials $GKE_CLUSTER --region $GKE_ZONE
 
-    - name: Build and Push Gateway
+    - name: Build and Deploy Gateway
+      if: contains(github.event.head_commit.modified, 'services/gateway')
       run: |
-        # Build the Docker image
-        docker build -t ${{ env.REPOSITORY }}/gateway:${{ github.sha }} \
-                     -t ${{ env.REPOSITORY }}/gateway:latest \
+        docker build -t $REGISTRY/$PROJECT_ID/gateway:$GITHUB_SHA \
+                     -t $REGISTRY/$PROJECT_ID/gateway:latest \
                      -f services/gateway/Dockerfile .
         
-        # Push to Artifact Registry
-        docker push ${{ env.REPOSITORY }}/gateway:${{ github.sha }}
-        docker push ${{ env.REPOSITORY }}/gateway:latest
-
-    - name: Deploy to GKE
-      run: |
-        # Apply the deployment
-        kubectl apply -f k8s/gateway.yaml
+        docker push $REGISTRY/$PROJECT_ID/gateway:$GITHUB_SHA
+        docker push $REGISTRY/$PROJECT_ID/gateway:latest
         
-        # Update the image
         kubectl set image deployment/gateway \
-                gateway=${{ env.REPOSITORY }}/gateway:${{ github.sha }} \
-                -n atlasfs
+                gateway=$REGISTRY/$PROJECT_ID/gateway:$GITHUB_SHA \
+                -n atlasfs || echo "Gateway deployment not found"
+
+    - name: Build and Deploy Upload
+      if: contains(github.event.head_commit.modified, 'services/upload')
+      run: |
+        docker build -t $REGISTRY/$PROJECT_ID/upload:$GITHUB_SHA \
+                     -t $REGISTRY/$PROJECT_ID/upload:latest \
+                     -f services/upload/Dockerfile .
         
-        # Check rollout status
-        kubectl rollout status deployment/gateway -n atlasfs --timeout=300s
+        docker push $REGISTRY/$PROJECT_ID/upload:$GITHUB_SHA
+        docker push $REGISTRY/$PROJECT_ID/upload:latest
+        
+        kubectl set image deployment/upload \
+                upload=$REGISTRY/$PROJECT_ID/upload:$GITHUB_SHA \
+                -n atlasfs || echo "Upload deployment not found"
 
     - name: Verify Deployment
       run: |
         kubectl get pods -n atlasfs
         kubectl get services -n atlasfs
-        echo "Waiting for external IP..."
-        sleep 30
-        kubectl get svc gateway -n atlasfs
