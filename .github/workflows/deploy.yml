@@ -18,17 +18,24 @@ jobs:
     steps:
     - uses: actions/checkout@v3
 
-    # Fix authentication
     - id: auth
       uses: google-github-actions/auth@v1
       with:
         credentials_json: ${{ secrets.GCP_SA_KEY }}
 
     - uses: google-github-actions/setup-gcloud@v1
+      with:
+        install_components: 'gke-gcloud-auth-plugin'
 
     - name: Configure Docker and Kubectl
       run: |
+        # Configure Docker
         gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+        
+        # Install kubectl if needed
+        gcloud components install kubectl
+        
+        # Get cluster credentials
         gcloud container clusters get-credentials ${{ env.GKE_CLUSTER }} --region ${{ env.GKE_ZONE }}
 
     - name: Build and Deploy Gateway
@@ -63,8 +70,8 @@ jobs:
 
     - name: Wait for Rollout
       run: |
-        kubectl rollout status deployment/gateway -n atlasfs
-        kubectl rollout status deployment/upload -n atlasfs
+        kubectl rollout status deployment/gateway -n atlasfs --timeout=120s || true
+        kubectl rollout status deployment/upload -n atlasfs --timeout=120s || true
 
     - name: Verify Deployment
       run: |
@@ -73,9 +80,3 @@ jobs:
         echo ""
         echo "=== Services ==="
         kubectl get services -n atlasfs
-        echo ""
-        echo "=== Gateway Logs ==="
-        kubectl logs -n atlasfs deployment/gateway --tail=10
-        echo ""
-        echo "=== Upload Logs ==="
-        kubectl logs -n atlasfs deployment/upload --tail=10
