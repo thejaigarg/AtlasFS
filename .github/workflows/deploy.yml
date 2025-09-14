@@ -1,0 +1,98 @@
+name: Build and Deploy to GKE
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'services/**'
+      - 'k8s/**'
+      - '.github/workflows/**'
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
+  GKE_ZONE: ${{ secrets.GKE_ZONE }}
+  REGISTRY: gcr.io
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.detect.outputs.services }}
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 2
+      
+      - id: detect
+        run: |
+          # Detect which services changed
+          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD)
+          SERVICES=""
+          
+          for service in gateway upload storage metadata download; do
+            if echo "$CHANGED_FILES" | grep -q "services/$service/"; then
+              SERVICES="$SERVICES $service"
+            fi
+          done
+          
+          if [ -z "$SERVICES" ]; then
+            SERVICES="none"
+          fi
+          
+          echo "Changed services: $SERVICES"
+          echo "services=$SERVICES" >> $GITHUB_OUTPUT
+
+  build-and-deploy:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.services != 'none'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Google Cloud
+      uses: google-github-actions/setup-gcloud@v1
+      with:
+        service_account_key: ${{ secrets.GCP_SA_KEY }}
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        export_default_credentials: true
+
+    - name: Configure Docker for GCR
+      run: |
+        gcloud auth configure-docker
+
+    - name: Get GKE credentials
+      run: |
+        gcloud container clusters get-credentials $GKE_CLUSTER --region $GKE_ZONE
+
+    - name: Build and Deploy Services
+      run: |
+        SERVICES="${{ needs.detect-changes.outputs.services }}"
+        
+        for SERVICE in $SERVICES; do
+          if [ "$SERVICE" != "none" ] && [ -d "services/$SERVICE" ]; then
+            echo "Building $SERVICE..."
+            
+            # Build Docker image
+            docker build -t $REGISTRY/$PROJECT_ID/$SERVICE:$GITHUB_SHA \
+                         -t $REGISTRY/$PROJECT_ID/$SERVICE:latest \
+                         -f services/$SERVICE/Dockerfile .
+            
+            # Push to GCR
+            docker push $REGISTRY/$PROJECT_ID/$SERVICE:$GITHUB_SHA
+            docker push $REGISTRY/$PROJECT_ID/$SERVICE:latest
+            
+            # Update Kubernetes deployment
+            kubectl set image deployment/$SERVICE \
+                    $SERVICE=$REGISTRY/$PROJECT_ID/$SERVICE:$GITHUB_SHA \
+                    -n atlasfs || echo "Deployment $SERVICE not found, skipping..."
+          fi
+        done
+
+    - name: Verify Deployment
+      run: |
+        kubectl get pods -n atlasfs
+        kubectl get services -n atlasfs

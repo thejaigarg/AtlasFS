@@ -1,2 +1,0 @@
-# AtlasFS
-Distributed File System
