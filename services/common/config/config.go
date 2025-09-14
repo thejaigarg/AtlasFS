@@ -55,10 +55,10 @@ func Load() *Config {
 	}
 
 	// PostgreSQL configuration - Add all fields
-	cfg.PostgresHost = getEnv("POSTGRES_HOST", "104.197.234.56")
+	cfg.PostgresHost = getEnv("POSTGRES_HOST", "localhost")
 	cfg.PostgresPort = getEnvInt("POSTGRES_PORT", 5432)
 	cfg.PostgresUser = getEnv("POSTGRES_USER", "postgres")
-	cfg.PostgresPassword = getEnv("POSTGRES_PASSWORD", "LawdaYaadNahiRahega")
+	cfg.PostgresPassword = getEnv("POSTGRES_PASSWORD", "") // No default!
 	cfg.PostgresDB = getEnv("POSTGRES_DB", "atlasfs")
 
 	// MinIO configuration
@@ -67,8 +67,8 @@ func Load() *Config {
 	} else {
 		cfg.MinioEndpoint = getEnv("MINIO_ENDPOINT", "localhost:9000")
 	}
-	cfg.MinioAccessKey = getEnv("MINIO_ACCESS_KEY", "minioadmin")
-	cfg.MinioSecretKey = getEnv("MINIO_SECRET_KEY", "minioadmin123")
+	cfg.MinioAccessKey = getEnv("MINIO_ACCESS_KEY", "")
+	cfg.MinioSecretKey = getEnv("MINIO_SECRET_KEY", "")
 	cfg.MinioUseSSL = getEnvBool("MINIO_USE_SSL", false)
 
 	return cfg

@@ -1,3 +1,4 @@
+# k8s/gateway.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -15,40 +16,42 @@ spec:
     spec:
       containers:
       - name: gateway
-        image: us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:latest
-        imagePullPolicy: Always
+        image: gcr.io/atlas-fs-472018/gateway:latest
         ports:
         - containerPort: 8080
         env:
-        - name: REDIS_ADDR
-          value: "redis:6379"
         - name: PORT
           value: "8080"
-        - name: VERSION
-          value: "1.0.0"
+        - name: REDIS_ADDR
+          value: "redis:6379"
+        - name: KAFKA_BROKERS
+          value: "kafka-headless:9092"
         - name: POSTGRES_HOST
-          value: "104.197.234.56"
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: host
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: user
         - name: POSTGRES_PASSWORD
-          value: "LawdaYaadNahiRahega"
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: database
+        - name: POSTGRES_PORT
+          value: "5432"
         resources:
           requests:
             memory: "256Mi"
             cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 8080
-          initialDelaySeconds: 5
-          periodSeconds: 5
 ---
 apiVersion: v1
 kind: Service
@@ -62,4 +65,3 @@ spec:
   ports:
   - port: 80
     targetPort: 8080
-    protocol: TCP

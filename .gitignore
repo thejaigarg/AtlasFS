@@ -39,3 +39,5 @@ temp/
 
 # Build directories
 build/
+.env.local
+.env.prod

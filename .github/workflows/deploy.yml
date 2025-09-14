@@ -71,3 +71,13 @@ jobs:
       run: |
         kubectl get pods -n atlasfs
         kubectl get services -n atlasfs
+    
+    - name: Deploy Gateway
+      run: |
+        # Update deployment with new image
+        kubectl set image deployment/gateway \
+          gateway=$REGISTRY/$PROJECT_ID/gateway:$GITHUB_SHA \
+          -n atlasfs
+        
+        # Wait for rollout
+        kubectl rollout status deployment/gateway -n atlasfs
