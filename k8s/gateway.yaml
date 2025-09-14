@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
       - name: gateway
-        image: gcr.io/atlas-fs-472018/gateway:latest
+        image: us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080

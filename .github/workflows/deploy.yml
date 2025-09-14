@@ -23,7 +23,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    # CORRECT WAY to authenticate
+    # CORRECT WAY to Authenticate
     - id: 'auth'
       name: 'Authenticate to Google Cloud'
       uses: 'google-github-actions/auth@v1'
@@ -44,13 +44,13 @@ jobs:
     - name: Build and Push Gateway
       run: |
         # Build the Docker image
-        docker build -t gcr.io/atlas-fs-472018/gateway:${{ github.sha }} \
-                     -t gcr.io/atlas-fs-472018/gateway:latest \
+        docker build -t us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:${{ github.sha }} \
+                     -t us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:latest \
                      -f services/gateway/Dockerfile .
         
         # Push to GCR
-        docker push gcr.io/atlas-fs-472018/gateway:${{ github.sha }}
-        docker push gcr.io/atlas-fs-472018/gateway:latest
+        docker push us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:${{ github.sha }}
+        docker push us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:latest
 
     - name: Deploy to GKE
       run: |
@@ -59,7 +59,7 @@ jobs:
         
         # Update the image
         kubectl set image deployment/gateway \
-                gateway=gcr.io/atlas-fs-472018/gateway:${{ github.sha }} \
+                gateway=us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/gateway:${{ github.sha }} \
                 -n atlasfs
         
         # Check rollout status
