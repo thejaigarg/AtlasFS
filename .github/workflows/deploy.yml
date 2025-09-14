@@ -11,8 +11,8 @@ on:
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
-  GKE_ZONE: ${{ secrets.GKE_ZONE }}
+  GKE_CLUSTER: atlas-fs-472018  # Hard-coded to be safe
+  GKE_ZONE: us-central1
   REGISTRY: gcr.io
 
 jobs:
@@ -27,8 +27,7 @@ jobs:
       
       - id: detect
         run: |
-          # Detect which services changed
-          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD)
+          CHANGED_FILES=$(git diff --name-only HEAD^ HEAD || echo "services/")
           SERVICES=""
           
           for service in gateway upload storage metadata download; do
@@ -38,7 +37,7 @@ jobs:
           done
           
           if [ -z "$SERVICES" ]; then
-            SERVICES="none"
+            SERVICES="gateway"  # Default to gateway if nothing detected
           fi
           
           echo "Changed services: $SERVICES"
@@ -46,27 +45,36 @@ jobs:
 
   build-and-deploy:
     needs: detect-changes
-    if: needs.detect-changes.outputs.services != 'none'
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    - name: Setup Google Cloud
-      uses: google-github-actions/setup-gcloud@v1
+    # FIXED: Better Google Cloud authentication
+    - name: Setup Cloud SDK
+      uses: google-github-actions/setup-gcloud@v0
       with:
         service_account_key: ${{ secrets.GCP_SA_KEY }}
-        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        project_id: atlas-fs-472018
         export_default_credentials: true
+
+    # NEW: Authenticate with service account
+    - name: Authenticate to Google Cloud
+      run: |
+        echo "${{ secrets.GCP_SA_KEY }}" | base64 -d > /tmp/gcp-key.json
+        gcloud auth activate-service-account --key-file=/tmp/gcp-key.json
+        gcloud config set project atlas-fs-472018
+        gcloud config set compute/zone us-central1
+        gcloud config set compute/region us-central1
 
     - name: Configure Docker for GCR
       run: |
-        gcloud auth configure-docker
+        gcloud auth configure-docker --quiet
 
     - name: Get GKE credentials
       run: |
-        gcloud container clusters get-credentials $GKE_CLUSTER --region $GKE_ZONE
+        gcloud container clusters get-credentials atlas-fs-472018 --region us-central1
 
     - name: Build and Deploy Services
       run: |
@@ -77,18 +85,23 @@ jobs:
             echo "Building $SERVICE..."
             
             # Build Docker image
-            docker build -t $REGISTRY/$PROJECT_ID/$SERVICE:$GITHUB_SHA \
-                         -t $REGISTRY/$PROJECT_ID/$SERVICE:latest \
+            docker build -t gcr.io/atlas-fs-472018/$SERVICE:$GITHUB_SHA \
+                         -t gcr.io/atlas-fs-472018/$SERVICE:latest \
                          -f services/$SERVICE/Dockerfile .
             
             # Push to GCR
-            docker push $REGISTRY/$PROJECT_ID/$SERVICE:$GITHUB_SHA
-            docker push $REGISTRY/$PROJECT_ID/$SERVICE:latest
+            docker push gcr.io/atlas-fs-472018/$SERVICE:$GITHUB_SHA
+            docker push gcr.io/atlas-fs-472018/$SERVICE:latest
             
             # Update Kubernetes deployment
             kubectl set image deployment/$SERVICE \
-                    $SERVICE=$REGISTRY/$PROJECT_ID/$SERVICE:$GITHUB_SHA \
-                    -n atlasfs || echo "Deployment $SERVICE not found, skipping..."
+                    $SERVICE=gcr.io/atlas-fs-472018/$SERVICE:$GITHUB_SHA \
+                    -n atlasfs || echo "Deployment $SERVICE not found, creating it..."
+            
+            # If deployment doesn't exist, create it
+            if ! kubectl get deployment $SERVICE -n atlasfs; then
+              kubectl apply -f k8s/$SERVICE.yaml
+            fi
           fi
         done
 
