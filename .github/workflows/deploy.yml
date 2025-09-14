@@ -33,9 +33,9 @@ jobs:
     - name: 'Set up Cloud SDK'
       uses: 'google-github-actions/setup-gcloud@v1'
 
-    - name: Configure Docker for GCR
+    - name: Configure Docker for Artifact Registry  # CHANGED THIS
       run: |
-        gcloud auth configure-docker --quiet
+        gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
     - name: Get GKE credentials
       run: |
