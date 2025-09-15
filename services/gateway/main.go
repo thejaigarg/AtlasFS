@@ -149,6 +149,13 @@ func (g *GatewayService) uploadFile(c *gin.Context) {
 		return
 	}
 
+	// ADD THIS: Pass the file_id to upload service
+	err = writer.WriteField("file_id", fileID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add file_id"})
+		return
+	}
+
 	err = writer.Close()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to close writer"})

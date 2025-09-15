@@ -107,7 +107,15 @@ func (u *UploadService) handleUpload(c *gin.Context) {
 	}
 	defer file.Close()
 
-	fileID := fmt.Sprintf("file_%d", time.Now().UnixNano())
+	fileID := c.PostForm("file_id")
+	if fileID == "" {
+		// Fallback to generating one if not provided (for backward compatibility)
+		fileID = fmt.Sprintf("file_%d", time.Now().UnixNano())
+		log.Printf("⚠️ No file_id provided, generated: %s", fileID)
+	} else {
+		log.Printf("📥 Using file_id from gateway: %s", fileID)
+	}
+
 	log.Printf("📥 Processing upload for file: %s (size: %d)", header.Filename, header.Size)
 
 	// Process file in chunks
