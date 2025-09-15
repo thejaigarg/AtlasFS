@@ -40,10 +40,12 @@ jobs:
 
     - name: Build and Deploy Gateway
       run: |
-        # Build gateway
-        docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }} \
+       # Build gateway with verbose output
+        echo "Building gateway..."
+        docker build --progress=plain \
+                     -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }} \
                      -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:latest \
-                     -f services/gateway/Dockerfile .
+                     -f services/gateway/Dockerfile . || (echo "Gateway build failed" && exit 1)
         
         # Push gateway
         docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/atlasfs-repo/gateway:${{ github.sha }}
