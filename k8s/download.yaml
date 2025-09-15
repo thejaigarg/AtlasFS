@@ -1,0 +1,80 @@
+# k8s/download.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: download
+  namespace: atlasfs
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: download
+  template:
+    metadata:
+      labels:
+        app: download
+    spec:
+      containers:
+      - name: download
+        image: us-central1-docker.pkg.dev/atlas-fs-472018/atlasfs-repo/download:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8085
+        env:
+        - name: PORT
+          value: "8085"
+        - name: REDIS_ADDR
+          value: "redis:6379"
+        - name: KAFKA_BROKERS
+          value: "kafka-headless:9092"
+        - name: MINIO_ENDPOINT
+          value: "minio:9000"
+        - name: MINIO_ACCESS_KEY
+          value: "minioadmin"
+        - name: MINIO_SECRET_KEY
+          value: "minioadmin123"
+        - name: POSTGRES_HOST
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_HOST
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_DB
+        - name: POSTGRES_PORT
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: POSTGRES_PORT
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: download
+  namespace: atlasfs
+spec:
+  selector:
+    app: download
+  ports:
+  - port: 8085
+    targetPort: 8085
+    protocol: TCP
