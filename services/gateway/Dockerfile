@@ -1,4 +1,3 @@
-# services/download/Dockerfile
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /app
@@ -7,14 +6,15 @@ RUN go mod download
 
 COPY services/ ./services/
 
-WORKDIR /app/services/download
-RUN CGO_ENABLED=0 GOOS=linux go build -o download main.go
+WORKDIR /app/services/gateway
+RUN CGO_ENABLED=0 GOOS=linux go build -o gateway main.go
 
 FROM alpine:latest
 RUN apk --no-cache add ca-certificates
 WORKDIR /root/
 
-COPY --from=builder /app/services/download/download .
+# This line is critical - it copies the gateway binary
+COPY --from=builder /app/services/gateway/gateway .
 
-EXPOSE 8085
-CMD ["./download"]
+EXPOSE 8080
+CMD ["./gateway"]
