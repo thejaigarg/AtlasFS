@@ -2,10 +2,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"time"
 
@@ -17,7 +21,6 @@ import (
 	// Use relative imports
 	"atlasfs/services/common/config"
 	"atlasfs/services/common/events"
-	"atlasfs/services/common/models"
 )
 
 type GatewayService struct {
@@ -107,79 +110,78 @@ func (g *GatewayService) uploadFile(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// Generate file ID
 	fileID := fmt.Sprintf("file_%d", time.Now().UnixNano())
 
-	// Create file record
-	fileRecord := &models.File{
-		ID:        fileID,
-		Name:      header.Filename,
-		Size:      header.Size,
-		Status:    models.StatusUploading,
-		UserID:    "anonymous", // TODO: Add authentication
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
-	}
-
-	// Store in Redis for quick access
-	ctx := context.Background()
-	sessionKey := fmt.Sprintf("upload:%s", fileID)
-	g.redisClient.HSet(ctx, sessionKey, map[string]interface{}{
-		"filename": header.Filename,
-		"size":     header.Size,
-		"status":   "uploading",
-		"uploaded": time.Now().Unix(),
-	})
-	g.redisClient.Expire(ctx, sessionKey, 2*time.Hour)
-
-	// Store in PostgreSQL for persistence
+	// Store initial metadata in PostgreSQL
 	if g.db != nil {
 		query := `
             INSERT INTO files (file_id, file_name, file_size, status, user_id, created_at, updated_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
         `
-		_, dbErr := g.db.Exec(query, fileRecord.ID, fileRecord.Name, fileRecord.Size,
-			fileRecord.Status, fileRecord.UserID, fileRecord.CreatedAt, fileRecord.UpdatedAt)
+		_, dbErr := g.db.Exec(query, fileID, header.Filename, header.Size,
+			"uploading", "anonymous", time.Now(), time.Now())
 		if dbErr != nil {
 			log.Printf("Failed to insert into PostgreSQL: %v", dbErr)
 		}
 	}
 
-	// Publish event to Kafka
-	event := events.NewEvent(
-		events.FileUploadStarted,
-		"gateway",
-		map[string]interface{}{
-			"file_id":  fileID,
-			"filename": header.Filename,
-			"size":     header.Size,
-			"user_id":  "anonymous",
-		},
-	)
+	// Forward to upload service for actual processing
+	uploadURL := "http://upload:8081/upload"
 
-	if eventData, err := event.ToJSON(); err == nil {
-		kafkaErr := g.kafkaWriter.WriteMessages(context.Background(),
-			kafka.Message{
-				Key:   []byte(fileID),
-				Value: eventData,
-			},
-		)
-		if kafkaErr != nil {
-			log.Printf("Failed to publish to Kafka: %v", kafkaErr)
-		} else {
-			log.Printf("📤 Published event: %s", events.FileUploadStarted)
-		}
+	// Create a new multipart form
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	// Add the file
+	part, err := writer.CreateFormFile("file", header.Filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create form"})
+		return
 	}
 
-	// TODO: Forward to upload service for actual processing
-	// For now, just return success
-	c.JSON(http.StatusAccepted, gin.H{
-		"file_id":  fileID,
-		"filename": header.Filename,
-		"size":     header.Size,
-		"status":   "accepted",
-		"message":  "File upload initiated",
-	})
+	// Reset file reader to beginning
+	file.Seek(0, 0)
+
+	// Copy file data
+	_, err = io.Copy(part, file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to copy file"})
+		return
+	}
+
+	err = writer.Close()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to close writer"})
+		return
+	}
+
+	// Create request to upload service
+	req, err := http.NewRequest("POST", uploadURL, body)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	// Forward to upload service
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to forward to upload service: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Upload service unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read response from upload service
+	var uploadResponse map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&uploadResponse); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse upload response"})
+		return
+	}
+
+	// Return the upload service response
+	c.JSON(http.StatusAccepted, uploadResponse)
 }
 
 func (g *GatewayService) testKafka(c *gin.Context) {
