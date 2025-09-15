@@ -311,41 +311,83 @@ func (g *GatewayService) home(c *gin.Context) {
 func (g *GatewayService) getFile(c *gin.Context) {
 	fileID := c.Param("id")
 
-	ctx := context.Background()
-	sessionKey := fmt.Sprintf("upload:%s", fileID)
+	// Proxy to download service
+	downloadURL := fmt.Sprintf("http://download:8085/download/%s", fileID)
 
-	data := g.redisClient.HGetAll(ctx, sessionKey).Val()
-	if len(data) == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "File not found",
-		})
+	// Create request to download service
+	req, err := http.NewRequest("GET", downloadURL, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"file_id": fileID,
-		"data":    data,
-	})
+	// Forward request
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Failed to forward to download service: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Download service unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Check if file was not found
+	if resp.StatusCode == http.StatusNotFound {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	// Copy response headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			c.Header(key, value)
+		}
+	}
+
+	// Stream the file back to client
+	c.Status(resp.StatusCode)
+	io.Copy(c.Writer, resp.Body)
 }
 
 func (g *GatewayService) listFiles(c *gin.Context) {
-	ctx := context.Background()
+	if g.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Database not available"})
+		return
+	}
 
-	// Get all upload keys from Redis
-	keys := g.redisClient.Keys(ctx, "upload:*").Val()
+	// Query PostgreSQL instead of Redis
+	rows, err := g.db.Query(`
+        SELECT file_id, file_name, file_size, status, chunk_count, created_at 
+        FROM files 
+        ORDER BY created_at DESC 
+        LIMIT 100
+    `)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to query files"})
+		return
+	}
+	defer rows.Close()
 
 	files := []gin.H{}
-	for _, key := range keys {
-		data := g.redisClient.HGetAll(ctx, key).Val()
-		if len(data) > 0 {
-			fileID := key[7:] // Remove "upload:" prefix
-			files = append(files, gin.H{
-				"file_id":  fileID,
-				"filename": data["filename"],
-				"size":     data["size"],
-				"status":   data["status"],
-			})
+	for rows.Next() {
+		var fileID, fileName, status string
+		var fileSize int64
+		var chunkCount int
+		var createdAt time.Time
+
+		err := rows.Scan(&fileID, &fileName, &fileSize, &status, &chunkCount, &createdAt)
+		if err != nil {
+			continue
 		}
+
+		files = append(files, gin.H{
+			"file_id":     fileID,
+			"filename":    fileName,
+			"size":        fileSize,
+			"status":      status,
+			"chunk_count": chunkCount,
+			"created_at":  createdAt,
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -357,16 +399,41 @@ func (g *GatewayService) listFiles(c *gin.Context) {
 func (g *GatewayService) deleteFile(c *gin.Context) {
 	fileID := c.Param("id")
 
-	ctx := context.Background()
-	sessionKey := fmt.Sprintf("upload:%s", fileID)
-
-	deleted := g.redisClient.Del(ctx, sessionKey).Val()
-	if deleted == 0 {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "File not found",
-		})
+	if g.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Database not available"})
 		return
 	}
+
+	// Start transaction
+	tx, err := g.db.Begin()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction"})
+		return
+	}
+	defer tx.Rollback()
+
+	// Check if file exists
+	var exists bool
+	err = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM files WHERE file_id = $1)", fileID).Scan(&exists)
+	if err != nil || !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	// Delete from files table (chunks will cascade delete due to foreign key)
+	_, err = tx.Exec("DELETE FROM files WHERE file_id = $1", fileID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete file"})
+		return
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit deletion"})
+		return
+	}
+
+	// TODO: Also delete chunks from MinIO (optional, implement later)
 
 	c.JSON(http.StatusOK, gin.H{
 		"file_id": fileID,
